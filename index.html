@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#000"/>
+    <title>TKAM</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/cannon.js/0.6.2/cannon.min.js"></script>
+    <script src="https://cdn.babylonjs.com/babylon.js"></script>
+    <script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
+    <script src="https://cdn.babylonjs.com/gui/babylon.gui.js"></script>
+    <style>
+        html {background-color: gray;}
+        @keyframes coolShadeThingy {0% {color: white;}50% {color: gray;}100% { color: white;}}
+        #canvas {width: 100%; height: 100%;position: absolute;top: 0;left: 0;}
+        #titleScreen {z-index: 10; width: 100%; height: 100%; position: absolute; top: 0; left: 0; background-color: black; transition-duration: 3s;}
+        #blackScreen {z-index: 1; width: 100%; height: 100%; position: absolute; top: 0; left: 0; background-color: black; opacity: 0; transition-duration: 3s;}
+        #glowyText {position: absolute;top: 50%;left: 50%;transform: translate(-50%, -50%);animation: coolShadeThingy 4s ease-in-out infinite;transition-duration: 1s;font-size:200%;}
+        #options {display: none; position: absolute; top: 85%; left: 50%; transform: translate(-50%, -50%); width: 40%; height: 20%;}
+        .optionButton {font-weight: 800; border: 2px solid black; background-color: gray; border-radius: 10px; width: 30%; height: 33%; position: absolute; transform: translate(-50%, -50%); transition-duration: .3s;}
+        .optionHoverable {transform: translate(-50%, -50%) scale(110%); background-color: white;}
+        .optionHoverable:hover {transform: translate(-50%, -50%) scale(120%); cursor: pointer;}
+        #question {z-index: 9; color: white; position: absolute; top: 65%; left: 50%; transform: translate(-50%, -50%); width: 40%; height: 20%;}
+        #questionP {font-weight: 500; font-size: 120%; transition-duration: 5s;}
+    </style>
+</head>
+<body>
+    <div id="titleScreen"><p id="glowyText">Press any key to continue...<p></div>
+    <div id="blackScreen"></div>
+    <audio id="guiltyAudio"></audio>
+    <audio id="introAudio"></audio>
+    <canvas id="canvas"></canvas>
+    <div id="question">
+        <p id="questionP"></p>
+    </div>
+    <div id="options">
+    </div>
+    <script>
+	let running = false;
+        let scene;
+        let camera;
+        let anchor;
+        let createGameScene = async function (canvas, engine) {
+            scene = new BABYLON.Scene(engine);
+            const earthGravity = -9.81;
+            scene.gravity = new BABYLON.Vector3(0, earthGravity / 60, 0);
+            scene.enablePhysics(scene.gravity, new BABYLON.CannonJSPlugin());
+            scene.clearColor = new BABYLON.Color3(.2, .2, .2);
+            camera = new BABYLON.FreeCamera("camera1", new BABYLON.Vector3(2.2, 1.5, -17.2), scene);
+            camera.mode = BABYLON.Camera.PERSPECTIVE_CAMERA;
+            camera.attachControl(canvas, true);
+            camera.inputs.removeByType("Keyboard");
+            let light = new BABYLON.HemisphericLight("light", new BABYLON.Vector3(0, 5, 0), scene); // 20, -20, -20
+            let ground = BABYLON.MeshBuilder.CreateBox("floor", {
+                width: 25,
+                height: 1.5,
+                depth: 25
+            }, scene);
+            ground.position = new BABYLON.Vector3(0, -17.5, 0);
+            ground.checkCollisions = true;
+            ground.physicsImpostor = new BABYLON.PhysicsImpostor(ground, BABYLON.PhysicsImpostor.BoxImpostor, { mass: 0, friction: 0.5, restitution: 0.7 }, scene);
+            scene.activeCameras.push(camera);
+            camera.fov = 0.8;
+            camera.inertia = .01;
+            camera.angularSensibility = 1400;
+            camera.ellipsoid = new BABYLON.Vector3(.5, .5, .5);
+            camera.minZ = .35;
+            var glass = new BABYLON.PBRMaterial("glass", scene);
+            glass.indexOfRefraction = 0.52;
+            glass.alpha = 0.5;
+            glass.directIntensity = 0.0;
+            glass.environmentIntensity = 0.7;
+            glass.cameraExposure = 0.66;
+            glass.cameraContrast = 1.66;
+            glass.microSurface = 1;
+            glass.reflectivityColor = new BABYLON.Color3(0.2, 0.2, 0.2);
+            glass.albedoColor = new BABYLON.Color3(0.95, 0.95, 0.95);
+            let theMap = BABYLON.SceneLoader.ImportMesh("", "./", "courtroom.glb", scene, (meshes) => {
+                for (let i = 0; i < meshes.length; i++) {
+                    meshes[i].checkCollisions = true;
+                }
+            });
+            scene.fogMode = BABYLON.Scene.FOGMODE_EXP;
+            scene.fogDensity = 0.05;
+            scene.fogColor = new BABYLON.Color3(0, 0, 0);
+            return scene;
+        };
+        function run3D() {
+            let canvas = document.getElementById("canvas");
+            let engine = new BABYLON.Engine(canvas, true);
+            createGameScene(canvas, engine);
+            createPointerLock(scene);
+            engine.runRenderLoop(function () {
+                scene.render();
+            });
+            window.addEventListener("resize", function () {
+                engine.resize();
+            });
+            return scene;
+        }
+        let createPointerLock = function (scene) {
+            let canvas = scene.getEngine().getRenderingCanvas();
+            document.addEventListener("click", event => {
+                canvas.requestPointerLock = canvas.requestPointerLock || canvas.msRequestPointerLock || canvas.mozRequestPointerLock || canva;
+                if (canvas.requestPointerLock) {
+                    canvas.requestPointerLock();
+                }
+            }, false);
+        };
+        let questionAnswerable = false;
+        let firstTime = true;
+        let currentSection = 0;
+        const questionP = document.getElementById("questionP");
+        let currentText = "";
+        let fullText = "";
+        let curIndex = 0;
+        let interval = 40;
+        let buttons = [];
+        let cutscene = false;
+        let curCutscene = 0;
+        function typeText() {
+            if (curIndex < fullText.length) {
+                currentText += fullText[curIndex];
+                curIndex++;
+                questionP.textContent = currentText;
+                setTimeout(typeText, interval);
+            } else {
+                if (running) {
+                    if (cutscene) {
+                        let doTimeout = true;
+                        if (curCutscene == 1) {
+                            curCutscene = 2;
+                            currentText = "Atticus: ";
+                            fullText = "It was a misdemeanor and it's in the record, Judge";
+                            curIndex = 0;
+                        } else if (curCutscene == 2) {
+                            curCutscene = 3;
+                            cutscene = false;
+                            currentText = "Judge Taylor: ";
+                            fullText = "Witness'll answer, though";
+                            curIndex = 0;
+                            currentSection++;
+                        } else if (curCutscene == 3) {
+                            curCutscene++;
+                            currentText = "Mr. Gilmer: ";
+                            fullText = "How dare you?!";
+                            curIndex = 0;
+                        } else if (curCutscene == -1) {
+                            cutscene = false;
+                            doTimeout = false;
+                        } else if (curCutscene == 4) {
+                            gameOver();
+                        }
+                        if (doTimeout) {
+                            setTimeout(typeText, 500);
+                        }
+                    } else {
+                        for (let i = 0; i < buttons.length; i++) {
+                            let questionOption = gameKey[currentSection].options;
+                            if (Object.keys(questionOption).length > i) {
+                                buttons[i].textContent = (i + 1) + ") " + Object.keys(questionOption)[i];
+                                buttons[i].classList.add("optionHoverable");
+                                buttons[i].disabled = false;
+                            }
+                        }
+                        questionAnswerable = true;
+                    }
+                }
+            }
+        }
+        const titleScreen = document.getElementById("titleScreen");
+        const guiltyAudio = document.getElementById("guiltyAudio");
+        const blackScreen = document.getElementById("blackScreen");
+        const introAudio = document.getElementById("introAudio");
+        const options = document.getElementById("options");
+        const gameKey = {
+            0: {
+                question: "You were given thirty days once for disorderly conduct, Robinson?",
+                options: {
+                    "Yes": {},
+                    "No": {
+                        "gameOver": "What a plain and simple lie, of which I do not need to point out the implications."
+                    }
+                }
+            },
+            1: {
+                question: "What'd the ****** look like when you got through with him?",
+                options: {
+                    "He beat me, Mr. Gilmer.": {},
+                }
+            },
+            2: {
+                question: "Witness'll answer though",
+                options: {
+                    "Yes suh, I got thirty days.": {},
+                }
+            },
+            3: {
+                question: "Robinson, you're pretty good at busting up chiffarobes and kindling with one hand, aren't you?",
+                options: {
+                    "Yes": {},
+                    "No": {
+                        "gameOver": "So... now you're changing your testimony. Obviously, you have no idea what you're talking about."
+                    }
+                }
+            },
+            4: {
+                question: "Strong enough to choke the breath out of a woman and sling her to the floor?",
+                options: {
+                    "Yes, suh": {
+                        "gameOver": "I think that's convincing enough."
+                    },
+                    "No, suh": {
+                        "gameOver": "If you're not strong enough, how'd you chop all of that chiffarobes for her, eh?"
+                    },
+                    "Never done that, suh.": {}
+                }
+            },
+            5: {
+                question: "But you are strong enough to?",
+                options: {
+                    "Yes": {},
+                    "No": {
+                        "gameOver": "So how did you chop up all of that Chiffarobes for her, eh?"
+                    }
+                }
+            },
+            6: {
+                question: "Had your eye on her a long time, hadn't you, boy?",
+                options: {
+                    "Yes suh": {},
+                    "No suh, I never looked at her.": {}
+                }
+            },
+            7: {
+                question: "Then you were mighty polite to do all that chopping and hauling for her, weren't you, boy?",
+                options: {
+                    "I was just trying to help her out, suh": {}
+                }
+            },
+            8: {
+                question: "That was mighty generous of you, you had chores at home after your regular work, didn't you?",
+                options: {
+                    "Yes suh": {},
+                    "No suh": {}
+                }
+            },
+            9: {
+                question: "Why didn't you do them instead of Miss Ewell's?",
+                options: {
+                    "I done 'em both, suh.": {},
+                    "I was just trying to help out Miss Ewell": {
+                        "gameOver": "So you were helping out Miss Ewell, but not the people at your home?"
+                    }
+                }
+            },
+            10: {
+                question: "You must have been pretty busy. Why?",
+                options: {
+                    "Why what, suh?": {}
+                }
+            },
+            11: {
+                question: "Why were you so anxious to do that woman's chores?",
+                options: {
+                    "Looked like she didn't have nobody to help her": {}
+                }
+            },
+            12: {
+                question: "With Mr. Ewell and seven children on the place, boy?",
+                options: {
+                    "It looked like they never help her": {}
+                }
+            },
+            13: {
+                question: "You did all of that chopping and work from sheer goodness, boy?",
+                options: {
+                    "I was just trying to help out": {},
+                    "I felt sorry for her": {
+                        "gameOver": "You felt sorry for her? You felt... sorry?"
+                    }
+                }
+            },
+            14: {
+                question: "Now you went by the house as usual, last November twenty-first, and she asked you to come in and bust up a chiffarobe?",
+                options: {
+                    "Yes": {
+                        "gameOver": "Ah, but in your testimony, she asked you to fix a broken door. Now your changing to what Mayella said? What REALLY happened?"
+                    },
+                    "No": {}
+                }
+            },
+            15: {
+                question: "Do you deny that you went by the house?",
+                options: {
+                    "Yes suh, I never went to that house.": {
+                        "gameOver": "It doesn't seem like you're in the right mind. Your changing your testimony, obviously confused."
+                    },
+                    "No suh, I went to the house": {
+                        "gameOver": "It doesn't seem like you're in the right mind. Your changing your testimony, obviously confused."
+                    },
+                    "She said she had somethin‘ for me to do inside the house": {}
+                }
+            },
+            16: {
+                question: "She says she asked you to bust up a chiffarobe, is that right?",
+                options: {
+                    "Yes suh, it is": {
+                        "gameOver": "It seems as if your confused, changing your testimony multiple times..."
+                    },
+                    "No suh, it ain't": {}
+                }
+            },
+            17: {
+                question: "Then you say she’s lying, boy?",
+                options: {
+                    "Yes suh, she's lying.": {
+                        "gameOver": "You say that she, Mr. Ewell, and Mr. Tate all just lied?"
+                    },
+                    "No, I just say she’s mistaken in her mind.": {}
+                }
+            },
+            18: {
+                question: "Didn’t Mr. Ewell run you off the place, boy?",
+                options: {
+                    "Yes suh, he did": {
+                        "gameOver": "But in your testimony, you had said you ran before he got in. Seems like your mixing up your lies with what REALLY happened."
+                    },
+                    "No suh, I don’t think he did.": {}
+                }
+            },
+            19: {
+                question: "Don’t think, what do you mean?",
+                options: {
+                    "I mean he went towards Mayella suh, he ain' run me off": {
+                        "gameOver": "But in your testimony, you were saying you were... 'runnin‘ so fast I didn’t know what happened.'. Seems like you don't want to say what REALLY happened."
+                    },
+                    "I mean Mr. Tate was chasing me, suh": {
+                        "gameOver": "But in your testimony, you said you ran off before even Mr. Ewell got there, much less Mr. Tate."
+                    },
+                    "I mean I didn’t stay long enough for him to run me off.": {},
+                    "I mean that he did run me off": {
+                        "gameOver": "It seems as if your confused, changing your testimony multiple times..."
+                    }
+                }
+            },
+            20: {
+                question: "You’re very candid about this, why did you run so fast?",
+                options: {
+                    "I says I was scared, suh.": {}
+                }
+            },
+            21: {
+                question: "If you had a clear conscience, why were you scared?",
+                options: {
+                    "Like I says before, it weren’t safe for any ****** to be in a—fix like that.": {}
+                }
+            },
+            22: {
+                question: "But you weren’t in a fix—you testified that you were resisting Miss Ewell. Were you so scared that she’d hurt you, you ran, a big buck like you?",
+                options: {
+                    "No suh, I’s scared I’d be in court, just like I am now.": {}
+                }
+            },
+            23: {
+                question: "Scared of arrest, scared you’d have to face up to what you did?",
+                options: {
+                    "No suh, scared I’d hafta face up to what I didn’t do.": {}
+                }
+            },
+            24: {
+                question: "Are you being impudent to me, boy?",
+                options: {
+                    "No suh, I didn’t go to be.": {
+                        "gameOver": "But w-. u- uhhhh. That's... all that... I have to ask."
+                    }
+                }
+            },
+            100: {
+                options: {
+                    "I meant I do.": {
+                        "gameOver": "So your obviously confused..."
+                    },
+                    "Helen done 'em all": {
+                        "gameOver": "So you wouldn't help Helen, but go out of your way to help Mayella?"
+                    }
+                }
+            }
+        }
+        function inputResponse(responseNum) {
+            if (running) {
+                if (Object.keys(gameKey[currentSection].options).length > responseNum) {
+                    if (Object.values(gameKey[currentSection].options)[responseNum]["gameOver"]) {
+                        currentText = "Mr. Gilmer: ";
+                        curIndex = 0;
+                        fullText = Object.values(gameKey[currentSection].options)[responseNum]["gameOver"];
+                        typeText();
+                        gameOver();
+                    } else {
+                        curIndex = 0;
+                        if (currentSection == 1) {
+                            cutscene = true;
+                            curCutscene = 1;
+                            currentText = "Mr. Gilmer: ";
+                            fullText = "Yes, but you were convicted, weren't you?";
+                        } else if (currentSection == 6 && responseNum == 0) {
+                            cutscene = true;
+                            currentText = "Judge Taylor: ";
+                            fullText = "ORDER! *BANG BANG* ORDER IN THE COURT!";
+                        } else if (currentSection == 8 && responseNum == 1) {
+                            currentSection = 100;
+                            currentText = "Mr. Gilmer: ";
+                            fullText = "Why not?";
+                        } else {
+                            currentSection++;
+                            currentText = "Mr. Gilmer: ";
+                            fullText = fullText = gameKey[currentSection].question;
+                        }
+                    }
+                    questionAnswerable = false;
+                    for (let i = 0; i < buttons.length; i++) {
+                        buttons[i].textContent = "";
+                        if (buttons[i].classList.contains("optionHoverable")) {
+                            buttons[i].classList.remove("optionHoverable");
+                        }
+                        buttons[i].disabled = true;
+                    }
+                    typeText();
+                }
+            } else {
+                alert("NOT RUNNING. WHAT. HOW DID YOU CLICK. SOMETHINGS BROKEN AHHHHHH!");
+            }
+        }
+        for (let i = 0; i < 4; i++) {
+            let button = document.createElement("button");
+            button.classList.add("optionButton");
+            button.style.left = (((i % 2) * 100) + "%");
+            button.style.top = ((Math.floor(i / 2) * 100) + "%");
+            button.disabled = true;
+            buttons.push(button);
+            options.appendChild(button);
+            button.addEventListener("click", function () {
+                inputResponse(i);
+            });
+        }
+        document.addEventListener("keydown", function (event) {
+            if (!running) {
+                running = true;
+                questionP.textContent = "";
+                titleScreen.style.opacity = 0;
+                blackScreen.style.opacity = "100%";
+                setTimeout(function () {
+                    questionP.style.opacity = "100%";
+                    titleScreen.style.display = "none";
+                    blackScreen.style.display = "flex";
+                    options.style.display = "block";
+                    if (firstTime) {
+                        firstTime = false;
+                        currentText = "Deputy: ";
+                        curIndex = 0;
+                        fullText = "Please raise your right hand and respond to me: 'Do you swear that the testimony you are about to give in this arbitration is the truth, the whole truth, and nothing but the truth, so help you God?'";
+                        cutscene = true;
+                        curCutscene = -1;
+                        typeText();
+                        run3D();
+                        setTimeout(function () {
+                            currentText = "You: ";
+                            curIndex = 0;
+                            fullText = "I do";
+                            cutscene = true;
+                            curCutscene = -1;
+                            typeText();
+                            setTimeout(function () {
+                                blackScreen.style.opacity = 0;
+                                setTimeout(function () {
+                                    blackScreen.style.display = "none";
+                                    startGame();
+                                }, 4000);
+                            }, 3000);
+                        }, 10000);
+                    } else {
+                        blackScreen.style.opacity = 0;
+                        setTimeout(function () {
+                            blackScreen.style.display = "none";
+                            startGame();
+                        }, 4000);
+                    }
+                }, 3000);
+                running = true;
+            }
+        });
+        function gameOver() {
+            blackScreen.style.display = "block";
+            titleScreen.style.display = "block";
+            cutscene = true;
+            curCutscene = null;
+            setTimeout(function () {
+                blackScreen.style.opacity = "100%";
+                questionP.textContent = "";
+                setTimeout(function () {
+                    currentText = "Judge Taylor: ";
+                    fullText = "Jury, give us your results.";
+                    curIndex = 0;
+                    typeText();
+                    setTimeout(function () {
+                        for (let i = 0; i < 4; i++) {
+                            setTimeout(function () {
+                                currentText = "Jury Person " + (i + 1) + ": ";
+                                fullText = "Guilty";
+                                curIndex = 0;
+                                typeText();
+                            }, i * 2000);
+                        }
+                        setTimeout(function () {
+                            questionP.style.opacity = 0;
+                        }, 3000);
+                        setTimeout(function () {
+                            titleScreen.style.opacity = "100%";
+                            setTimeout(function () {
+                                blackScreen.style.display = "none";
+                                blackScreen.style.opacity = 0;
+                                options.style.display = "none";
+                            }, 3000);
+                            running = false;
+                        }, 8000);
+                    }, 5000);
+                }, 3000);
+            }, 10);
+        }
+        function startGame() {
+            cutscene = false;
+            curCutscene = 0;
+            currentSection = 0;
+            questionAnswerable = false;
+            currentText = "Mr. Gilmer: ";
+            curIndex = 0;
+            fullText = gameKey[currentSection].question;
+            typeText();
+            running = true;
+        }
+        let inputs = [1, 2, 3, 4];
+        document.addEventListener("keydown", function (event) {
+            if (running) {
+                if (inputs.includes(parseInt(event.key))) {
+                    if (questionAnswerable) {
+                        inputResponse((parseInt(event.key) - 1));
+                    }
+                }
+            }
+        });
+    </script>
+</body>
+</html> 
